@@ -3,7 +3,11 @@ import os
 
 import pandas as pd
 import streamlit as st
-from openai import OpenAI
+
+try:
+    from openai import OpenAI
+except ModuleNotFoundError:
+    OpenAI = None
 
 from ai.openai_service import analyze_project, answer_question, default_ai_json, markdown_from_ai_json
 from charts.figures import (
@@ -58,7 +62,7 @@ def get_openai_api_key():
 
 
 api_key = get_openai_api_key()
-client = OpenAI(api_key=api_key) if api_key else None
+client = OpenAI(api_key=api_key) if api_key and OpenAI else None
 
 if "analysis_cache" not in st.session_state:
     st.session_state.analysis_cache = {}
