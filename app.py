@@ -3,7 +3,6 @@ import os
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 from openai import OpenAI
 
 from ai.openai_service import analyze_project, answer_question, default_ai_json, markdown_from_ai_json
@@ -48,8 +47,17 @@ Key milestones are concentrated around procurement, systems integration, testing
 # APPLICATION CONFIGURATION
 # =====================================================
 st.set_page_config(page_title=APP_NAME, layout="wide", initial_sidebar_state="expanded")
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
+
+
+def get_openai_api_key():
+    """Load the API key from Streamlit Secrets in production, with env fallback for local runs."""
+    try:
+        return st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    except Exception:
+        return os.getenv("OPENAI_API_KEY")
+
+
+api_key = get_openai_api_key()
 client = OpenAI(api_key=api_key) if api_key else None
 
 if "analysis_cache" not in st.session_state:
