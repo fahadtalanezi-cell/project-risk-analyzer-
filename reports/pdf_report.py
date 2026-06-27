@@ -65,7 +65,25 @@ def paragraph(text, style, language, bold=False):
     return Paragraph(f"<b>{safe}</b>" if bold else safe, style)
 
 
-def build_pdf(language, labels, metrics, risk_df, ai_json):
+def pdf_currency(value):
+    if value is None:
+        return "Not available"
+    return f"{value:,.0f}"
+
+
+def pdf_index(value):
+    if value is None:
+        return "Not available"
+    return f"{value:.2f}"
+
+
+def pdf_percent(value):
+    if value is None:
+        return "Not available"
+    return f"{value * 100:.1f}%"
+
+
+def build_pdf(language, labels, metrics, risk_df, ai_json, evm_metrics=None, schedule_metrics=None):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=42, leftMargin=42, topMargin=42, bottomMargin=42)
     font_name, bold_name = register_fonts(language)
@@ -108,6 +126,126 @@ def build_pdf(language, labels, metrics, risk_df, ai_json):
         ("PADDING", (0, 0), (-1, -1), 7),
     ]))
     story.append(table)
+
+    if evm_metrics:
+        evm_values = evm_metrics.get("values", {})
+        traffic = evm_metrics.get("traffic_lights", {})
+        interpretation = evm_metrics.get("interpretation", {})
+        story.extend([
+            Spacer(1, 14),
+            paragraph("Earned Value Management Dashboard" if language == "English" else "لوحة إدارة القيمة المكتسبة", styles["Section"], language, bold=True),
+        ])
+        evm_rows = [
+            ["BAC", pdf_currency(evm_values.get("bac")), "Budget at Completion"],
+            ["PV", pdf_currency(evm_values.get("pv")), "PV = BAC x Planned %"],
+            ["EV", pdf_currency(evm_values.get("ev")), "EV = BAC x Actual %"],
+            ["AC", pdf_currency(evm_values.get("ac")), "Actual Cost"],
+            ["SV", pdf_currency(evm_values.get("sv")), "SV = EV - PV"],
+            ["CV", pdf_currency(evm_values.get("cv")), "CV = EV - AC"],
+            ["SPI", pdf_index(evm_values.get("spi")), "SPI = EV / PV"],
+            ["CPI", pdf_index(evm_values.get("cpi")), "CPI = EV / AC"],
+            ["EAC", pdf_currency(evm_values.get("eac")), evm_metrics.get("formulas", {}).get("eac") or "Not available"],
+            ["ETC", pdf_currency(evm_values.get("etc")), "ETC = EAC - AC"],
+            ["VAC", pdf_currency(evm_values.get("vac")), "VAC = BAC - EAC"],
+            ["TCPI", pdf_index(evm_values.get("tcpi")), evm_metrics.get("formulas", {}).get("tcpi") or "Not available"],
+            ["Percent Complete", pdf_percent(evm_values.get("percent_complete")), "Actual % or EV / BAC"],
+        ]
+        evm_table_data = [[
+            paragraph(row[0], styles["BodyText"], language, bold=True),
+            paragraph(row[1], styles["BodyText"], language),
+            paragraph(row[2], styles["BodyText"], language),
+        ] for row in evm_rows]
+        evm_table = Table(evm_table_data, colWidths=[90, 125, 245])
+        evm_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ede9fe")),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cbd5e1")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(evm_table)
+
+        traffic_lines = [
+            f"Schedule: {traffic.get('schedule', 'gray')} - {interpretation.get('schedule', '')}",
+            f"Cost: {traffic.get('cost', 'gray')} - {interpretation.get('cost', '')}",
+            f"Forecast: {traffic.get('forecast', 'gray')} - {interpretation.get('forecast', '')}",
+            f"TCPI: {traffic.get('tcpi', 'gray')} - {interpretation.get('tcpi', '')}",
+        ]
+        story.extend([Spacer(1, 8), paragraph("Traffic-Light Management Interpretation" if language == "English" else "تفسير مؤشرات الحالة", styles["Section"], language, bold=True)])
+        for line in traffic_lines:
+            story.append(paragraph(f"• {line}", styles["BodyText"], language))
+
+        missing = evm_metrics.get("missing_sources", [])
+        assumptions = evm_metrics.get("assumptions", [])
+        if missing or assumptions:
+            story.extend([Spacer(1, 8), paragraph("EVM Assumptions and Data Gaps" if language == "English" else "افتراضات وفجوات القيمة المكتسبة", styles["Section"], language, bold=True)])
+            if missing:
+                story.append(paragraph(f"• Missing source data: {', '.join(missing)}", styles["BodyText"], language))
+            for item in assumptions:
+                story.append(paragraph(f"• {item}", styles["BodyText"], language))
+
+    if schedule_metrics:
+        story.extend([
+            Spacer(1, 14),
+            paragraph("Schedule Control Dashboard" if language == "English" else "لوحة ضبط الجدول الزمني", styles["Section"], language, bold=True),
+        ])
+        forecast = schedule_metrics.get("forecast", {})
+        schedule_rows = [
+            ["Schedule Health", str(schedule_metrics.get("traffic_light", "gray")).upper()],
+            ["Baseline Finish", str(forecast.get("baseline_finish") or "Not enough schedule data")[:10]],
+            ["Forecast Finish", str(forecast.get("forecast_finish") or "Not enough schedule data")[:10]],
+            ["Forecast Delay Days", str(forecast.get("forecast_delay_days") if forecast.get("forecast_delay_days") is not None else "Not enough schedule data")],
+            ["Forecast Method", str(forecast.get("method", "Not enough schedule data"))],
+        ]
+        schedule_table = Table([
+            [paragraph(a, styles["BodyText"], language, bold=True), paragraph(b, styles["BodyText"], language)]
+            for a, b in schedule_rows
+        ], colWidths=[180, 280])
+        schedule_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ede9fe")),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cbd5e1")),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(schedule_table)
+
+        critical_path = schedule_metrics.get("critical_path", [])
+        story.extend([Spacer(1, 8), paragraph("Critical Path" if language == "English" else "المسار الحرج", styles["Section"], language, bold=True)])
+        if critical_path:
+            for activity in critical_path[:12]:
+                story.append(paragraph(f"• {activity}", styles["BodyText"], language))
+        else:
+            story.append(paragraph("• Not enough schedule data to calculate the critical path.", styles["BodyText"], language))
+
+        float_table = schedule_metrics.get("float_table")
+        if float_table is not None and not float_table.empty:
+            story.extend([Spacer(1, 8), paragraph("Float Summary" if language == "English" else "ملخص السماحية الزمنية", styles["Section"], language, bold=True)])
+            for _, row in float_table.head(10).iterrows():
+                story.append(paragraph(f"• {row.get('activity')} | Total Float: {row.get('total_float')} | Critical: {row.get('is_critical')}", styles["BodyText"], language))
+
+        milestones = schedule_metrics.get("milestones")
+        story.extend([Spacer(1, 8), paragraph("Milestone Slippage" if language == "English" else "انزلاق المعالم", styles["Section"], language, bold=True)])
+        if milestones is not None and not milestones.empty:
+            for _, row in milestones.head(10).iterrows():
+                line = f"{row.get('milestone')} | Planned: {row.get('planned_date')} | Actual/Forecast: {row.get('actual_or_forecast_date')} | Slippage: {row.get('slippage_days')} days | {row.get('status')}"
+                story.append(paragraph(f"• {line}", styles["BodyText"], language))
+        else:
+            story.append(paragraph("• Not enough schedule data to calculate milestone slippage.", styles["BodyText"], language))
+
+        s_curve = schedule_metrics.get("s_curve")
+        story.extend([Spacer(1, 8), paragraph("S-Curve Summary" if language == "English" else "ملخص منحنى S", styles["Section"], language, bold=True)])
+        if s_curve is not None and not s_curve.empty:
+            latest = s_curve.tail(1).iloc[0]
+            story.append(paragraph(f"• Latest cumulative PV: {pdf_currency(latest.get('PV'))}, EV: {pdf_currency(latest.get('EV'))}, AC: {pdf_currency(latest.get('AC'))}.", styles["BodyText"], language))
+        else:
+            story.append(paragraph("• Not enough schedule data to build an S-curve.", styles["BodyText"], language))
+
+        assumptions = schedule_metrics.get("assumptions", [])
+        missing = schedule_metrics.get("missing_data", [])
+        if assumptions or missing:
+            story.extend([Spacer(1, 8), paragraph("Schedule Assumptions and Data Gaps" if language == "English" else "افتراضات وفجوات الجدول الزمني", styles["Section"], language, bold=True)])
+            if missing:
+                story.append(paragraph(f"• Missing source data: {', '.join(missing)}", styles["BodyText"], language))
+            for item in assumptions:
+                story.append(paragraph(f"• {item}", styles["BodyText"], language))
 
     story.extend([Spacer(1, 14), paragraph(labels["risk_breakdown"], styles["Section"], language, bold=True)])
     risk_rows = [[paragraph(labels["category"], styles["BodyText"], language, bold=True), paragraph(labels["score"], styles["BodyText"], language, bold=True)]]
@@ -152,6 +290,19 @@ def build_pdf(language, labels, metrics, risk_df, ai_json):
             "risk_register": "Detailed Risk Register",
             "schedule_assessment": "Schedule Assessment",
             "budget_assessment": "Budget Assessment",
+            "project_health_assessment": "Project Health Assessment",
+            "cost_performance": "Cost Performance",
+            "schedule_performance": "Schedule Performance",
+            "forecast": "Forecast",
+            "corrective_actions": "Corrective Actions",
+            "preventive_actions": "Preventive Actions",
+            "pmo_recommendations": "PMO Recommendations",
+            "critical_path_interpretation": "Critical Path Interpretation",
+            "float_risks": "Float Risks",
+            "milestone_delays": "Milestone Delays",
+            "s_curve_performance": "S-Curve Performance",
+            "finish_date_forecast": "Finish Date Forecast",
+            "schedule_recovery_actions": "Schedule Recovery Actions",
             "resource_assessment": "Resource Assessment",
             "scope_governance": "Scope Governance",
             "decision_recommendation": "Decision Recommendation",
@@ -164,6 +315,19 @@ def build_pdf(language, labels, metrics, risk_df, ai_json):
             "risk_register": "سجل المخاطر التفصيلي",
             "schedule_assessment": "تقييم الجدول الزمني",
             "budget_assessment": "تقييم الميزانية",
+            "project_health_assessment": "تقييم صحة المشروع",
+            "cost_performance": "أداء التكلفة",
+            "schedule_performance": "أداء الجدول",
+            "forecast": "التوقعات",
+            "corrective_actions": "الإجراءات التصحيحية",
+            "preventive_actions": "الإجراءات الوقائية",
+            "pmo_recommendations": "توصيات مكتب إدارة المشاريع",
+            "critical_path_interpretation": "تفسير المسار الحرج",
+            "float_risks": "مخاطر السماحية الزمنية",
+            "milestone_delays": "تأخيرات المعالم",
+            "s_curve_performance": "أداء منحنى S",
+            "finish_date_forecast": "توقع تاريخ الانتهاء",
+            "schedule_recovery_actions": "إجراءات استعادة الجدول",
             "resource_assessment": "تقييم الموارد",
             "scope_governance": "حوكمة النطاق",
             "decision_recommendation": "توصية القرار",
@@ -177,6 +341,19 @@ def build_pdf(language, labels, metrics, risk_df, ai_json):
         "detailed_findings",
         "schedule_assessment",
         "budget_assessment",
+        "project_health_assessment",
+        "cost_performance",
+        "schedule_performance",
+        "forecast",
+        "corrective_actions",
+        "preventive_actions",
+        "pmo_recommendations",
+        "critical_path_interpretation",
+        "float_risks",
+        "milestone_delays",
+        "s_curve_performance",
+        "finish_date_forecast",
+        "schedule_recovery_actions",
         "resource_assessment",
         "scope_governance",
         "decision_recommendation",
