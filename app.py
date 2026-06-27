@@ -9,24 +9,47 @@ try:
 except ModuleNotFoundError:
     OpenAI = None
 
-from ai.openai_service import analyze_project, answer_question, default_ai_json, markdown_from_ai_json
+from ai.openai_service import (
+    analyze_project,
+    answer_question,
+    default_ai_json,
+    extract_evm_source_data_with_ai,
+    markdown_from_ai_json,
+)
 from charts.figures import (
     budget_waterfall,
     category_bar,
     critical_task_ranking,
+    evm_forecast_chart,
+    evm_indices_chart,
+    evm_value_chart,
+    evm_variance_chart,
+    finish_forecast_chart,
     forecast_chart,
+    float_analysis_chart,
+    milestone_slippage_chart,
     milestone_tracking,
     resource_donut,
     resource_load_chart,
     risk_gauge,
     risk_heatmap,
     risk_radar,
+    s_curve_chart,
     spi_cpi_trend,
     timeline_chart,
 )
 from components.ui import floating_assistant, hero, inject_css, insight_card, kpi_cards, soft_panel
 from localization.strings import LANGUAGES, TRANSLATIONS, direction, t
 from reports.pdf_report import build_pdf
+from services.evm_engine import (
+    calculate_evm_metrics,
+    evm_to_ai_context,
+    extract_evm_source_data,
+    format_currency,
+    format_index,
+    format_percent,
+    merge_source_data,
+)
 from services.forecasting import build_forecast, performance_indicators
 from services.risk_engine import (
     build_heatmap_data,
@@ -36,6 +59,7 @@ from services.risk_engine import (
     estimate_ai_confidence,
     project_status,
 )
+from services.schedule_engine import analyze_schedule_control, schedule_to_ai_context
 from utils.file_processing import SUPPORTED_TYPES, extract_file_text
 
 
@@ -44,6 +68,8 @@ DEMO_TEXT = """
 The project portfolio includes moderate schedule pressure, procurement coordination needs,
 resource allocation constraints, controlled scope exposure, and budget variance monitoring.
 Key milestones are concentrated around procurement, systems integration, testing, and executive handover.
+For the demonstration EVM scenario, the project budget is 1,000,000 SAR, actual cost incurred
+is 450,000 SAR, planned progress is 50 percent, and actual progress is 40 percent.
 """
 
 
@@ -66,6 +92,8 @@ client = OpenAI(api_key=api_key) if api_key and OpenAI else None
 
 if "analysis_cache" not in st.session_state:
     st.session_state.analysis_cache = {}
+if "evm_cache" not in st.session_state:
+    st.session_state.evm_cache = {}
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "uploaded_project_file" not in st.session_state:
@@ -190,6 +218,24 @@ else:
     is_demo = True
 
 risk_score, category_scores, risk_signals = calculate_risk(project_inputs, extracted_text)
+evm_source_data = extract_evm_source_data(extracted_text, processed_file.get("preview_df"))
+missing_evm_sources = [
+    field
+    for field, item in evm_source_data.items()
+    if item.get("value") is None
+]
+evm_cache_key = hashlib.sha256((file_hash + "evm").encode("utf-8")).hexdigest()
+if missing_evm_sources and client and not is_demo:
+    if evm_cache_key not in st.session_state.evm_cache:
+        try:
+            st.session_state.evm_cache[evm_cache_key] = extract_evm_source_data_with_ai(client, language, extracted_text)
+        except Exception:
+            st.session_state.evm_cache[evm_cache_key] = {}
+    evm_source_data = merge_source_data(evm_source_data, st.session_state.evm_cache[evm_cache_key])
+evm_metrics = calculate_evm_metrics(evm_source_data)
+evm_ai_context = evm_to_ai_context(evm_metrics)
+schedule_metrics = analyze_schedule_control(extracted_text, processed_file.get("preview_df"), evm_metrics)
+schedule_ai_context = schedule_to_ai_context(schedule_metrics)
 risk_df = build_risk_table(category_scores, language)
 heatmap_df = build_heatmap_data(category_scores, language)
 timeline_df = build_timeline(category_scores, language)
@@ -214,7 +260,7 @@ metrics = {
 if file_hash not in st.session_state.analysis_cache:
     if client and not is_demo:
         try:
-            ai_json = analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics)
+            ai_json = analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics, evm_ai_context, schedule_ai_context)
         except Exception as exc:
             st.warning(f"AI analysis service error: {exc}")
             ai_json = default_ai_json(language)
@@ -228,7 +274,7 @@ if uploaded_file:
 
 if st.sidebar.button(t(language, "refresh_ai"), disabled=client is None or is_demo, width="stretch"):
     with st.spinner(t(language, "processing")):
-        st.session_state.analysis_cache[file_hash] = analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics)
+        st.session_state.analysis_cache[file_hash] = analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics, evm_ai_context, schedule_ai_context)
         st.rerun()
 
 st.sidebar.markdown("<div class='sidebar-bottom-control'>", unsafe_allow_html=True)
@@ -256,6 +302,8 @@ tabs = st.tabs([
     t(language, "executive_overview"),
     t(language, "risk_analysis"),
     t(language, "forecasting"),
+    t(language, "schedule_control"),
+    t(language, "evm"),
     t(language, "resource_analytics"),
     t(language, "ai_insights"),
     t(language, "reports"),
@@ -299,6 +347,105 @@ with tabs[2]:
     st.plotly_chart(timeline_chart(timeline_df, t(language, "timeline"), dark_mode), width="stretch", key="timeline_chart")
 
 with tabs[3]:
+    schedule_forecast = schedule_metrics["forecast"]
+    status_cols = st.columns(4)
+    status_cols[0].metric(t(language, "schedule_traffic"), schedule_metrics["traffic_light"].upper())
+    status_cols[1].metric(t(language, "baseline_finish"), str(schedule_forecast.get("baseline_finish") or t(language, "not_enough_schedule_data"))[:10])
+    status_cols[2].metric(t(language, "forecast_finish"), str(schedule_forecast.get("forecast_finish") or t(language, "not_enough_schedule_data"))[:10])
+    status_cols[3].metric(t(language, "forecast_delay_days"), schedule_forecast.get("forecast_delay_days") if schedule_forecast.get("forecast_delay_days") is not None else t(language, "not_enough_schedule_data"))
+
+    schedule_left, schedule_right = st.columns([1.15, .85])
+    with schedule_left:
+        st.plotly_chart(s_curve_chart(schedule_metrics["s_curve"], t(language, "s_curve"), dark_mode), width="stretch", key="schedule_s_curve")
+    with schedule_right:
+        st.plotly_chart(finish_forecast_chart(schedule_metrics, t(language, "schedule_forecast"), dark_mode), width="stretch", key="schedule_finish_forecast")
+
+    float_left, float_right = st.columns([1, 1])
+    with float_left:
+        st.plotly_chart(float_analysis_chart(schedule_metrics["float_table"], t(language, "float_analysis"), dark_mode), width="stretch", key="schedule_float_analysis")
+    with float_right:
+        st.plotly_chart(milestone_slippage_chart(schedule_metrics["milestones"], t(language, "milestone_slippage"), dark_mode), width="stretch", key="schedule_milestone_slippage")
+
+    cp_cols = st.columns([1.05, .95])
+    with cp_cols[0]:
+        st.markdown(f"### {t(language, 'critical_path')}")
+        if schedule_metrics["critical_path"]:
+            for activity in schedule_metrics["critical_path"]:
+                st.write(f"- {activity}")
+        else:
+            st.info(t(language, "not_enough_schedule_data"))
+    with cp_cols[1]:
+        st.markdown(f"### {t(language, 'schedule_assumptions')}")
+        if schedule_metrics["missing_data"]:
+            st.warning(f"{t(language, 'not_enough_schedule_data')}: {', '.join(schedule_metrics['missing_data'])}")
+        for item in schedule_metrics["assumptions"]:
+            st.write(f"- {item}")
+
+    with st.expander(t(language, "float_analysis"), expanded=not schedule_metrics["float_table"].empty):
+        if schedule_metrics["float_table"].empty:
+            st.info(t(language, "not_enough_schedule_data"))
+        else:
+            st.dataframe(schedule_metrics["float_table"], width="stretch", hide_index=True)
+    with st.expander(t(language, "milestone_slippage"), expanded=not schedule_metrics["milestones"].empty):
+        if schedule_metrics["milestones"].empty:
+            st.info(t(language, "not_enough_schedule_data"))
+        else:
+            st.dataframe(schedule_metrics["milestones"], width="stretch", hide_index=True)
+
+with tabs[4]:
+    evm_values = evm_metrics["values"]
+    kpi_cards([
+        {"label": "BAC", "value": format_currency(evm_values.get("bac")), "note": t(language, "bac")},
+        {"label": "PV", "value": format_currency(evm_values.get("pv")), "note": t(language, "pv")},
+        {"label": "EV", "value": format_currency(evm_values.get("ev")), "note": t(language, "ev")},
+        {"label": "AC", "value": format_currency(evm_values.get("ac")), "note": t(language, "ac")},
+        {"label": "SV", "value": format_currency(evm_values.get("sv")), "note": evm_metrics["interpretation"]["schedule"]},
+        {"label": "CV", "value": format_currency(evm_values.get("cv")), "note": evm_metrics["interpretation"]["cost"]},
+        {"label": "SPI", "value": format_index(evm_values.get("spi")), "note": evm_metrics["traffic_lights"]["schedule"].upper()},
+        {"label": "CPI", "value": format_index(evm_values.get("cpi")), "note": evm_metrics["traffic_lights"]["cost"].upper()},
+        {"label": "EAC", "value": format_currency(evm_values.get("eac")), "note": t(language, "eac")},
+        {"label": "ETC", "value": format_currency(evm_values.get("etc")), "note": t(language, "etc")},
+        {"label": "VAC", "value": format_currency(evm_values.get("vac")), "note": evm_metrics["interpretation"]["forecast"]},
+        {"label": "TCPI", "value": format_index(evm_values.get("tcpi")), "note": evm_metrics["interpretation"]["tcpi"]},
+    ])
+
+    status_cols = st.columns(4)
+    status_cols[0].metric(t(language, "percent_complete"), format_percent(evm_values.get("percent_complete")))
+    status_cols[1].metric(t(language, "spi"), format_index(evm_values.get("spi")))
+    status_cols[2].metric(t(language, "cpi"), format_index(evm_values.get("cpi")))
+    status_cols[3].metric(t(language, "tcpi"), format_index(evm_values.get("tcpi")))
+
+    evm_top_left, evm_top_right = st.columns([1, 1])
+    with evm_top_left:
+        st.plotly_chart(evm_value_chart(evm_metrics, t(language, "evm_values"), dark_mode), width="stretch", key="evm_value_chart")
+    with evm_top_right:
+        st.plotly_chart(evm_indices_chart(evm_metrics, t(language, "evm_indices"), dark_mode), width="stretch", key="evm_indices_chart")
+
+    evm_low_left, evm_low_right = st.columns([1, 1])
+    with evm_low_left:
+        st.plotly_chart(evm_variance_chart(evm_metrics, t(language, "evm_variances"), dark_mode), width="stretch", key="evm_variance_chart")
+    with evm_low_right:
+        st.plotly_chart(evm_forecast_chart(evm_metrics, t(language, "evm_forecast"), dark_mode), width="stretch", key="evm_forecast_chart")
+
+    source_rows = []
+    for field, item in evm_metrics["source_data"].items():
+        source_rows.append({
+            "Field": field.upper().replace("_PERCENT", " %"),
+            "Value": format_percent(item.get("value")) if field.endswith("percent") else format_currency(item.get("value")),
+            "Confidence": f"{float(item.get('confidence') or 0) * 100:.0f}%",
+            "Method": item.get("method", "not_found"),
+            "Evidence": item.get("evidence", ""),
+        })
+    with st.expander(t(language, "evm_source_data"), expanded=True):
+        st.dataframe(pd.DataFrame(source_rows), width="stretch", hide_index=True)
+
+    if evm_metrics["missing_sources"]:
+        st.warning(f"{t(language, 'missing_evm_data')}: {', '.join(evm_metrics['missing_sources'])}")
+    with st.expander(t(language, "evm_assumptions"), expanded=bool(evm_metrics["missing_sources"])):
+        for item in evm_metrics["assumptions"]:
+            st.write(f"- {item}")
+
+with tabs[5]:
     left, right = st.columns([1, 1])
     with left:
         st.plotly_chart(resource_load_chart(timeline_df, t(language, "resource_load"), dark_mode), width="stretch", key="resource_load_chart")
@@ -307,7 +454,7 @@ with tabs[3]:
     with st.expander(t(language, "portfolio_signal"), expanded=True):
         st.dataframe(timeline_df, width="stretch", hide_index=True)
 
-with tabs[4]:
+with tabs[6]:
     insight_cols = st.columns(3)
     with insight_cols[0]:
         insight_card("Key Risk" if language == "English" else "الخطر الرئيسي", "<br>".join(ai_json.get("executive_summary", [])[:2]), metrics["project_status"])
@@ -326,7 +473,7 @@ with tabs[4]:
         question = st.text_input(t(language, "chat_placeholder"))
         if st.button(t(language, "chat_button"), disabled=not question or client is None or is_demo):
             try:
-                answer = answer_question(client, language, question, ai_json, risk_signals, metrics)
+                answer = answer_question(client, language, question, ai_json, risk_signals, metrics, evm_ai_context, schedule_ai_context)
             except Exception as exc:
                 answer = f"AI analysis service error: {exc}"
             st.session_state.chat_history.append({"question": question, "answer": answer})
@@ -335,7 +482,7 @@ with tabs[4]:
             st.markdown(item["answer"])
     floating_assistant(t(language, "assistant_label"))
 
-with tabs[5]:
+with tabs[7]:
     left, right = st.columns([1.1, .9])
     with left:
         soft_panel(f"<h3>{t(language, 'executive_summary')}</h3><p>{' '.join(ai_json.get('executive_summary', []))}</p>")
@@ -344,7 +491,7 @@ with tabs[5]:
     with right:
         st.plotly_chart(risk_radar(risk_df, t(language, "risk_radar"), dark_mode), width="stretch", key="report_radar")
         try:
-            pdf_data = build_pdf(language, labels, metrics, risk_df, ai_json)
+            pdf_data = build_pdf(language, labels, metrics, risk_df, ai_json, evm_metrics, schedule_metrics)
             st.download_button(
                 label=t(language, "download_pdf"),
                 data=pdf_data,
