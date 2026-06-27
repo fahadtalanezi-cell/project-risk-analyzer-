@@ -235,3 +235,169 @@ def milestone_tracking(timeline_df, title, dark_mode):
     fig.update_traces(textposition="top center")
     fig.update_yaxes(range=[0, 105])
     return apply_layout(fig, dark_mode, 340)
+
+
+def evm_value_chart(evm_metrics, title, dark_mode):
+    values = evm_metrics.get("values", {})
+    labels = ["BAC", "PV", "EV", "AC"]
+    raw_values = [values.get("bac"), values.get("pv"), values.get("ev"), values.get("ac")]
+    chart_values = [value for value in raw_values if value is not None]
+    chart_labels = [label for label, value in zip(labels, raw_values) if value is not None]
+    if not chart_values:
+        chart_labels, chart_values = ["No EVM source values"], [0]
+    fig = px.bar(
+        x=chart_labels,
+        y=chart_values,
+        text=[f"{value:,.0f}" for value in chart_values],
+        color=chart_values,
+        color_continuous_scale=["#ddd6fe", "#a78bfa", "#5b21b6"],
+        title=title,
+        labels={"x": "EVM Measure", "y": "Value"},
+    )
+    fig.update_traces(marker_line_width=0, textposition="outside")
+    return apply_layout(fig, dark_mode, 340)
+
+
+def evm_variance_chart(evm_metrics, title, dark_mode):
+    values = evm_metrics.get("values", {})
+    sv = values.get("sv")
+    cv = values.get("cv")
+    labels = ["SV", "CV"]
+    raw_values = [sv, cv]
+    chart_values = [value for value in raw_values if value is not None]
+    chart_labels = [label for label, value in zip(labels, raw_values) if value is not None]
+    if not chart_values:
+        chart_labels, chart_values = ["No variance data"], [0]
+    colors = ["#a78bfa" if value >= 0 else "#7c3aed" for value in chart_values]
+    fig = go.Figure(go.Bar(
+        x=chart_labels,
+        y=chart_values,
+        marker_color=colors,
+        text=[f"{value:,.0f}" for value in chart_values],
+        textposition="outside",
+    ))
+    fig.update_layout(title=title, yaxis_title="Variance")
+    fig.add_hline(y=0, line_dash="dot", line_color="#ddd6fe")
+    return apply_layout(fig, dark_mode, 320)
+
+
+def evm_indices_chart(evm_metrics, title, dark_mode):
+    values = evm_metrics.get("values", {})
+    labels = ["SPI", "CPI", "TCPI"]
+    raw_values = [values.get("spi"), values.get("cpi"), values.get("tcpi")]
+    chart_values = [value for value in raw_values if value is not None]
+    chart_labels = [label for label, value in zip(labels, raw_values) if value is not None]
+    if not chart_values:
+        chart_labels, chart_values = ["No index data"], [0]
+    fig = go.Figure(go.Bar(
+        x=chart_labels,
+        y=chart_values,
+        marker_color=["#a78bfa", "#7c3aed", "#5b21b6"][: len(chart_values)],
+        text=[f"{value:.2f}" for value in chart_values],
+        textposition="outside",
+    ))
+    fig.add_hline(y=1, line_dash="dash", line_color="#ddd6fe")
+    fig.update_layout(title=title, yaxis_title="Performance Index", yaxis_range=[0, max(1.25, max(chart_values) + 0.2)])
+    return apply_layout(fig, dark_mode, 320)
+
+
+def evm_forecast_chart(evm_metrics, title, dark_mode):
+    values = evm_metrics.get("values", {})
+    labels = ["BAC", "EAC", "ETC", "VAC"]
+    raw_values = [values.get("bac"), values.get("eac"), values.get("etc"), values.get("vac")]
+    chart_values = [value for value in raw_values if value is not None]
+    chart_labels = [label for label, value in zip(labels, raw_values) if value is not None]
+    if not chart_values:
+        chart_labels, chart_values = ["No forecast data"], [0]
+    fig = go.Figure(go.Waterfall(
+        name="EVM Forecast",
+        orientation="v",
+        measure=["absolute"] * len(chart_values),
+        x=chart_labels,
+        y=chart_values,
+        connector={"line": {"color": "#a78bfa"}},
+        increasing={"marker": {"color": "#7c3aed"}},
+        decreasing={"marker": {"color": "#312e81"}},
+        totals={"marker": {"color": "#a78bfa"}},
+    ))
+    fig.update_layout(title=title, yaxis_title="Forecast Value")
+    return apply_layout(fig, dark_mode, 340)
+
+
+def s_curve_chart(s_curve_df, title, dark_mode):
+    fig = go.Figure()
+    if s_curve_df is None or s_curve_df.empty:
+        fig.add_annotation(text="Not enough schedule data", showarrow=False, x=0.5, y=0.5)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+    else:
+        fig.add_trace(go.Scatter(x=s_curve_df["period"], y=s_curve_df["PV"], mode="lines+markers", name="PV", line={"color": "#a78bfa", "width": 3}))
+        fig.add_trace(go.Scatter(x=s_curve_df["period"], y=s_curve_df["EV"], mode="lines+markers", name="EV", line={"color": "#7c3aed", "width": 3}))
+        fig.add_trace(go.Scatter(x=s_curve_df["period"], y=s_curve_df["AC"], mode="lines+markers", name="AC", line={"color": "#ddd6fe", "width": 3}))
+        fig.update_layout(xaxis_title="Period", yaxis_title="Cumulative Value")
+    fig.update_layout(title=title)
+    return apply_layout(fig, dark_mode, 380)
+
+
+def float_analysis_chart(float_df, title, dark_mode):
+    if float_df is None or float_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="Not enough schedule data", showarrow=False, x=0.5, y=0.5)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        fig.update_layout(title=title)
+        return apply_layout(fig, dark_mode, 340)
+    df = float_df.sort_values("total_float", ascending=True).head(15)
+    fig = px.bar(
+        df,
+        x="total_float",
+        y="activity",
+        orientation="h",
+        color="is_critical",
+        color_discrete_map={True: "#ddd6fe", False: "#7c3aed"},
+        title=title,
+        hover_data=["ES", "EF", "LS", "LF"],
+    )
+    fig.update_layout(xaxis_title="Total Float", yaxis_title="")
+    return apply_layout(fig, dark_mode, 360)
+
+
+def milestone_slippage_chart(milestone_df, title, dark_mode):
+    if milestone_df is None or milestone_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="Not enough schedule data", showarrow=False, x=0.5, y=0.5)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        fig.update_layout(title=title)
+        return apply_layout(fig, dark_mode, 340)
+    df = milestone_df.sort_values("slippage_days", ascending=True)
+    fig = px.bar(
+        df,
+        x="slippage_days",
+        y="milestone",
+        orientation="h",
+        color="status",
+        color_discrete_map={"On Time": "#a78bfa", "At Risk": "#7c3aed", "Delayed": "#4c1d95"},
+        title=title,
+        hover_data=["planned_date", "actual_or_forecast_date"],
+    )
+    fig.add_vline(x=0, line_dash="dot", line_color="#ddd6fe")
+    fig.update_layout(xaxis_title="Slippage Days", yaxis_title="")
+    return apply_layout(fig, dark_mode, 340)
+
+
+def finish_forecast_chart(schedule_metrics, title, dark_mode):
+    forecast = schedule_metrics.get("forecast", {})
+    baseline = forecast.get("baseline_finish")
+    projected = forecast.get("forecast_finish")
+    fig = go.Figure()
+    if not baseline or not projected:
+        fig.add_annotation(text="Not enough schedule data", showarrow=False, x=0.5, y=0.5)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+    else:
+        fig.add_trace(go.Bar(x=["Baseline Finish", "Forecast Finish"], y=[1, 1], marker_color=["#a78bfa", "#7c3aed"], text=[str(baseline)[:10], str(projected)[:10]], textposition="inside"))
+        fig.update_yaxes(visible=False)
+        fig.update_layout(xaxis_title=f"Forecast delay: {forecast.get('forecast_delay_days')} days")
+    fig.update_layout(title=title)
+    return apply_layout(fig, dark_mode, 280)
