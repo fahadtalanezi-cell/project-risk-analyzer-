@@ -10,6 +10,62 @@ def parse_ai_response(content):
         return None
 
 
+def extract_evm_source_data_with_ai(client, language, extracted_text):
+    """Use the existing LLM integration as a structured EVM source extractor."""
+
+    analysis_language = "Arabic" if language == "العربية" else "English"
+    document_excerpt = extracted_text[:MAX_AI_DOCUMENT_CHARS]
+    prompt = f"""
+Extract Earned Value Management source data from this project document.
+
+Return valid JSON only. Do not calculate EVM metrics here.
+Only extract source values that are clearly supported by evidence.
+
+Recognize semantic equivalents:
+- BAC: Budget at Completion, approved budget, project budget, total baseline budget.
+- AC: Actual Cost, cost incurred, current spending, money spent, actual expenditure.
+- Planned %: planned progress, planned completion, baseline progress.
+- Actual %: actual progress, physical progress, work completed, percent complete.
+
+JSON schema:
+{{
+  "bac": {{"value": number or null, "confidence": 0.0, "evidence": "...", "source": "llm_document_context", "method": "llm_semantic_extraction"}},
+  "ac": {{"value": number or null, "confidence": 0.0, "evidence": "...", "source": "llm_document_context", "method": "llm_semantic_extraction"}},
+  "planned_percent": {{"value": decimal_0_to_1_or_null, "confidence": 0.0, "evidence": "...", "source": "llm_document_context", "method": "llm_semantic_extraction"}},
+  "actual_percent": {{"value": decimal_0_to_1_or_null, "confidence": 0.0, "evidence": "...", "source": "llm_document_context", "method": "llm_semantic_extraction"}}
+}}
+
+If a value is not clearly present, set it to null and confidence to 0.
+Do not infer, estimate, or fabricate missing values.
+
+Document language may be {analysis_language}.
+
+Project document:
+{document_excerpt}
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": "You extract PMBOK EVM source fields as strict JSON."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    data = parse_ai_response(response.choices[0].message.content) or {}
+    normalized = {}
+    for field in ("bac", "ac", "planned_percent", "actual_percent"):
+        item = data.get(field) if isinstance(data, dict) else None
+        if isinstance(item, dict):
+            normalized[field] = {
+                "value": item.get("value"),
+                "confidence": float(item.get("confidence") or 0),
+                "evidence": item.get("evidence", ""),
+                "source": item.get("source", "llm_document_context"),
+                "method": item.get("method", "llm_semantic_extraction"),
+            }
+    return normalized
+
+
 def default_ai_json(language):
     if language == "العربية":
         return {
@@ -70,6 +126,19 @@ def markdown_from_ai_json(ai_json, language):
             "detailed_findings": "Detailed PMO Findings",
             "schedule_assessment": "Schedule Assessment",
             "budget_assessment": "Budget Assessment",
+            "project_health_assessment": "Project Health Assessment",
+            "cost_performance": "Cost Performance",
+            "schedule_performance": "Schedule Performance",
+            "forecast": "Forecast",
+            "corrective_actions": "Corrective Actions",
+            "preventive_actions": "Preventive Actions",
+            "pmo_recommendations": "PMO Recommendations",
+            "critical_path_interpretation": "Critical Path Interpretation",
+            "float_risks": "Float Risks",
+            "milestone_delays": "Milestone Delays",
+            "s_curve_performance": "S-Curve Performance",
+            "finish_date_forecast": "Finish Date Forecast",
+            "schedule_recovery_actions": "Schedule Recovery Actions",
             "resource_assessment": "Resource Assessment",
             "scope_governance": "Scope Governance",
             "thirty_day_action_plan": "30-Day Action Plan",
@@ -83,6 +152,19 @@ def markdown_from_ai_json(ai_json, language):
             "detailed_findings": "نتائج تفصيلية لإدارة المشاريع",
             "schedule_assessment": "تقييم الجدول الزمني",
             "budget_assessment": "تقييم الميزانية",
+            "project_health_assessment": "تقييم صحة المشروع",
+            "cost_performance": "أداء التكلفة",
+            "schedule_performance": "أداء الجدول",
+            "forecast": "التوقعات",
+            "corrective_actions": "الإجراءات التصحيحية",
+            "preventive_actions": "الإجراءات الوقائية",
+            "pmo_recommendations": "توصيات مكتب إدارة المشاريع",
+            "critical_path_interpretation": "تفسير المسار الحرج",
+            "float_risks": "مخاطر السماحية الزمنية",
+            "milestone_delays": "تأخيرات المعالم",
+            "s_curve_performance": "أداء منحنى S",
+            "finish_date_forecast": "توقع تاريخ الانتهاء",
+            "schedule_recovery_actions": "إجراءات استعادة الجدول",
             "resource_assessment": "تقييم الموارد",
             "scope_governance": "حوكمة النطاق",
             "thirty_day_action_plan": "خطة العمل خلال 30 يوماً",
@@ -112,9 +194,11 @@ def markdown_from_ai_json(ai_json, language):
     return "\n\n".join(sections)
 
 
-def analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics):
+def analyze_project(client, language, project_inputs, extracted_text, risk_signals, metrics, evm_metrics=None, schedule_metrics=None):
     analysis_language = "Arabic" if language == "العربية" else "English"
     document_excerpt = extracted_text[:MAX_AI_DOCUMENT_CHARS]
+    evm_context = evm_metrics or {}
+    schedule_context = schedule_metrics or {}
 
     prompt = f"""
 You are a senior PMO, industrial engineering, and project analytics consultant.
@@ -138,6 +222,19 @@ JSON schema:
   ],
   "schedule_assessment": ["..."],
   "budget_assessment": ["..."],
+  "project_health_assessment": ["..."],
+  "cost_performance": ["..."],
+  "schedule_performance": ["..."],
+  "forecast": ["..."],
+  "corrective_actions": ["..."],
+  "preventive_actions": ["..."],
+  "pmo_recommendations": ["..."],
+  "critical_path_interpretation": ["..."],
+  "float_risks": ["..."],
+  "milestone_delays": ["..."],
+  "s_curve_performance": ["..."],
+  "finish_date_forecast": ["..."],
+  "schedule_recovery_actions": ["..."],
   "resource_assessment": ["..."],
   "scope_governance": ["..."],
   "decision_recommendation": "...",
@@ -160,6 +257,10 @@ Depth requirements:
 - Explain likely root causes, operational impact, and mitigation logic.
 - Identify missing information and assumptions.
 - Give a 30-day action plan suitable for PMO leadership.
+- Use Earned Value Management values when available. If EVM data is missing, state the exact missing source data and continue with risk-based analysis.
+- Use Schedule Control data when available. Interpret critical path, total float, milestone slippage, S-curve performance, and finish-date forecast.
+- Do not invent BAC, PV, EV, AC, SPI, CPI, EAC, ETC, VAC, or TCPI values.
+- Do not invent critical path, float, milestone dates, or forecast finish dates when schedule data is missing.
 - Keep text professional and specific.
 
 Project inputs:
@@ -167,6 +268,12 @@ Project inputs:
 
 Computed metrics:
 {json.dumps(metrics, ensure_ascii=False)}
+
+PMBOK Earned Value Management metrics:
+{json.dumps(evm_context, ensure_ascii=False)}
+
+Schedule Control metrics:
+{json.dumps(schedule_context, ensure_ascii=False)}
 
 Rule-based risk signals:
 {json.dumps(risk_signals, ensure_ascii=False)}
@@ -187,7 +294,7 @@ Project file evidence:
     return parse_ai_response(content) or default_ai_json(language)
 
 
-def answer_question(client, language, question, ai_json, risk_signals, metrics):
+def answer_question(client, language, question, ai_json, risk_signals, metrics, evm_metrics=None, schedule_metrics=None):
     analysis_language = "Arabic" if language == "العربية" else "English"
     prompt = f"""
 Answer this project risk question in {analysis_language}. Be concise and decision-oriented.
@@ -202,6 +309,12 @@ Risk signals:
 
 Metrics:
 {json.dumps(metrics, ensure_ascii=False)}
+
+Earned Value Management:
+{json.dumps(evm_metrics or {}, ensure_ascii=False)}
+
+Schedule Control:
+{json.dumps(schedule_metrics or {}, ensure_ascii=False)}
 """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
